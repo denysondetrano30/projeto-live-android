@@ -1,10 +1,15 @@
 # Projeto Live (Android): compila o app a cada envio e guarda o .apk como "artifact"
-# (aba Actions > a compilação > Artifacts > ProjetoLive-apk-<número>).
+# (aba Actions > a compilação > Artifacts > ProjetoLive-apk-<número>) e publica em Releases > "teste",
+# que baixa sem login, sempre no mesmo link:
+# https://github.com/denysondetrano30/projeto-live-android/releases/download/teste/ProjetoLive-Camera.apk
 name: Android
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   apk:
@@ -29,3 +34,16 @@ jobs:
           name: ProjetoLive-apk-${{ github.run_number }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
+
+      - name: Publica em Releases > teste (baixa sem login)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk ProjetoLive-Camera.apk
+          notes="App de camera Android de teste (compilacao ${{ github.run_number }}). Instale por cima da versao anterior."
+          if ! gh release view teste >/dev/null 2>&1; then
+            gh release create teste --prerelease --target main --title "Versao de teste" --notes "$notes"
+          else
+            gh release edit teste --notes "$notes"
+          fi
+          gh release upload teste ProjetoLive-Camera.apk --clobber
