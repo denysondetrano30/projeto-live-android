@@ -222,8 +222,9 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(10f), dp(3f), dp(10f), dp(3f))
             visibility = View.GONE
         }
-        root.addView(tallyLabel, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
-            topMargin = dp(14f)
+        // No canto de cima, à direita: no meio ficava por cima do texto de estado.
+        root.addView(tallyLabel, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+            setMargins(0, dp(16f), dp(24f), 0)
         })
 
         // Estado da conexão (em cima, à esquerda) e a versão.
