@@ -118,6 +118,19 @@ class CameraController(private val context: Context) {
         }
     }
 
+    /** O zoom máximo desta câmera (até o limite do app). */
+    val maxZoomLevel: Float
+        get() = maxZoom
+
+    /** Botões 1x, 2x, 3x: vai direto para [target]. */
+    fun setZoom(target: Float) {
+        handler.post {
+            zoom = target.coerceIn(1f, maxZoom)
+            applyZoom()
+            repeatRequest()
+        }
+    }
+
     /** Pinça: [factor] > 1 aproxima. */
     fun pinch(factor: Float) {
         handler.post {

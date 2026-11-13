@@ -46,6 +46,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var statusText: TextView
     private lateinit var cameraMessage: TextView
     private lateinit var zoomText: TextView
+    private lateinit var grid: GridOverlay
+    private lateinit var gridButton: TextView
+    private val zoomButtons = mutableListOf<Pair<Float, TextView>>()
     private lateinit var talkBox: LinearLayout
     private lateinit var talkButton: TextView
     private lateinit var talkLabel: TextView
@@ -83,6 +86,10 @@ class MainActivity : ComponentActivity() {
         buildScreen()
 
         camera = CameraController(this)
+        // Some com 2x/3x se esta câmera não chega lá.
+        for ((step, button) in zoomButtons) {
+            if (step > camera.maxZoomLevel + 0.01f) button.visibility = View.GONE
+        }
         encoder = VideoEncoder(camera.videoSize.width, camera.videoSize.height)
         link = PcLink(this)
         audio = AudioCapture(this)
@@ -173,6 +180,27 @@ class MainActivity : ComponentActivity() {
         if (bold) typeface = Typeface.DEFAULT_BOLD
     }
 
+    private fun roundButton(text: String, onClick: () -> Unit): TextView = label(14f).apply {
+        this.text = text
+        gravity = Gravity.CENTER
+        setOnClickListener { onClick() }
+    }
+
+    /** Acende o botão do zoom atual e o da grade; mostra "1.5x" quando o zoom não é exato. */
+    private fun showZoom() {
+        for ((step, button) in zoomButtons) {
+            val active = kotlin.math.abs(zoom - step) < 0.05f
+            button.background = pill(if (active) Color.argb(230, 255, 204, 0) else Color.argb(160, 0, 0, 0), 22f)
+            button.setTextColor(if (active) Color.BLACK else Color.WHITE)
+        }
+        val gridOn = grid.visibility == View.VISIBLE
+        gridButton.background = pill(if (gridOn) Color.argb(230, 255, 204, 0) else Color.argb(160, 0, 0, 0), 22f)
+        gridButton.setTextColor(if (gridOn) Color.BLACK else Color.WHITE)
+        val exact = zoomButtons.any { kotlin.math.abs(zoom - it.first) < 0.05f }
+        zoomText.text = "%.1fx".format(zoom)
+        zoomText.visibility = if (exact) View.GONE else View.VISIBLE
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun buildScreen() {
         root = FrameLayout(this)
@@ -192,13 +220,16 @@ class MainActivity : ComponentActivity() {
         }
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> fitPreview() }
 
+        // Grade de terços e o recorte vertical 9:16 (igual ao app do iPhone). Só na tela.
+        grid = GridOverlay(this)
+        root.addView(grid, FrameLayout.LayoutParams(1, 1, Gravity.CENTER))
+
         // Pinça = zoom.
         val pinch = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 camera.pinch(detector.scaleFactor)
                 zoom = (zoom * detector.scaleFactor).coerceIn(1f, 6f)
-                zoomText.text = "%.1fx".format(zoom)
-                zoomText.visibility = if (zoom > 1.05f) View.VISIBLE else View.GONE
+                showZoom()
                 return true
             }
         })
@@ -253,8 +284,33 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
         }
         root.addView(zoomText, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
-            bottomMargin = dp(20f)
+            bottomMargin = dp(72f)
         })
+
+        // Embaixo, no meio: zoom 1x, 2x, 3x e a grade.
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        for (step in listOf(1f, 2f, 3f)) {
+            val button = roundButton("${step.toInt()}x") {
+                zoom = step
+                camera.setZoom(step)
+                showZoom()
+            }
+            zoomButtons.add(step to button)
+            controls.addView(button, LinearLayout.LayoutParams(dp(44f), dp(44f)).apply { rightMargin = dp(8f) })
+        }
+        gridButton = roundButton("Grade") {
+            grid.visibility = if (grid.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            showZoom()
+        }
+        gridButton.setPadding(dp(14f), 0, dp(14f), 0)
+        controls.addView(gridButton, LinearLayout.LayoutParams(-2, dp(44f)).apply { leftMargin = dp(8f) })
+        root.addView(controls, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+            bottomMargin = dp(16f)
+        })
+        showZoom()
 
         cameraMessage = label(16f).apply {
             background = pill()
@@ -381,6 +437,12 @@ class MainActivity : ComponentActivity() {
             params.width = w
             params.height = h
             preview.post { preview.layoutParams = params }
+        }
+        val gridParams = grid.layoutParams as FrameLayout.LayoutParams
+        if (gridParams.width != w || gridParams.height != h) {
+            gridParams.width = w
+            gridParams.height = h
+            grid.post { grid.layoutParams = gridParams }
         }
     }
 

@@ -11,8 +11,8 @@ android {
         applicationId = "live.projeto.camera"
         minSdk = 26 // Android 8
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 2
+        versionName = "0.2"
     }
 
     // Chave de TESTE (pública, no repositório): permite atualizar o app por cima sem desinstalar.

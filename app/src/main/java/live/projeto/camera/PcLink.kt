@@ -155,6 +155,6 @@ class PcLink(private val context: Context) {
 
     companion object {
         const val PORT = 9000
-        const val APP_VERSION = "0.1"
+        const val APP_VERSION = "0.2"
     }
 }
