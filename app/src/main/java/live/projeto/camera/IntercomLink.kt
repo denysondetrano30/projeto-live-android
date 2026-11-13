@@ -13,6 +13,7 @@ import android.os.Looper
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.net.Socket
 
 /**
  * Intercom: conversa por voz com o diretor e com as outras câmeras ("Segure para falar"),
@@ -24,6 +25,9 @@ import java.net.InetSocketAddress
  *
  * Wi-Fi: UDP para a porta que o OBS mandou pelo canal de controle (`AUDIO <porta> <ficha>`).
  * Um pacote sem voz a cada segundo avisa o PC do endereço do celular.
+ *
+ * Cabo USB: o OBS conecta na porta 9012 do app (pelo adb); cada pacote vai precedido do tamanho
+ * (2 bytes, little-endian). Com o cabo ligado, a voz vai por ele.
  *
  * O som só toca com fone de ouvido, para a voz do intercom não vazar no ambiente.
  */
@@ -57,6 +61,8 @@ class IntercomLink(context: Context) {
     private var track: AudioTrack? = null
     private var lastPlayed = 0L
     private var keepAlive: Thread? = null
+    private var cable: Socket? = null
+    private var cableVoice = "-"
 
     fun start() {
         audioManager.registerAudioDeviceCallback(object : AudioDeviceCallback() {
@@ -109,9 +115,71 @@ class IntercomLink(context: Context) {
         publish()
     }
 
+    /** Linha "VOICE <quem fala>" que chegou pelo cabo. */
+    fun setCableVoice(text: String) {
+        synchronized(lock) { cableVoice = text }
+        publish()
+    }
+
+    /** O OBS conectou na porta 9012 pelo cabo: a voz passa a ir e vir por aqui. Bloqueia até fechar. */
+    fun attachCable(socket: Socket) {
+        synchronized(lock) {
+            try {
+                cable?.close()
+            } catch (_: Exception) {
+            }
+            cable = socket
+        }
+        publish()
+        try {
+            val input = socket.getInputStream()
+            val header = ByteArray(2)
+            val packet = ByteArray(PACKET_SIZE)
+            while (true) {
+                if (!readFully(input, header, 2)) break
+                val length = (header[0].toInt() and 0xFF) or ((header[1].toInt() and 0xFF) shl 8)
+                if (length < HEADER_SIZE || length > PACKET_SIZE) break
+                if (!readFully(input, packet, length)) break
+                if (length < PACKET_SIZE) continue
+                if (packet[0] != 'P'.code.toByte() || packet[1] != 'L'.code.toByte() ||
+                    packet[2] != 'V'.code.toByte() || packet[3] != '1'.code.toByte()
+                ) continue
+                synchronized(lock) {
+                    if (cable === socket && packet[14].toInt() and FLAG_AUDIO.toInt() != 0) play(packet)
+                }
+            }
+        } catch (_: Exception) {
+        }
+        synchronized(lock) {
+            if (cable === socket) {
+                cable = null
+                cableVoice = "-"
+                if (route == null) {
+                    talking = false
+                    stopTrack()
+                }
+            }
+        }
+        try {
+            socket.close()
+        } catch (_: Exception) {
+        }
+        publish()
+    }
+
+    private fun readFully(input: java.io.InputStream, into: ByteArray, count: Int): Boolean {
+        var got = 0
+        while (got < count) {
+            val n = input.read(into, got, count - got)
+            if (n < 0) return false
+            got += n
+        }
+        return true
+    }
+
     /** "Segure para falar": true ao apertar, false ao soltar. */
     fun setTalking(value: Boolean) {
-        synchronized(lock) { talking = value && route != null }
+        synchronized(lock) { talking = value && (route != null || cable != null) }
         publish()
     }
 
@@ -121,7 +189,7 @@ class IntercomLink(context: Context) {
     /** Voz do microfone (320 amostras em 16 kHz), da thread do microfone. */
     fun captured(frame: ShortArray) {
         synchronized(lock) {
-            if (!talking || socket == null) return
+            if (!talking || (socket == null && cable == null)) return
             sendPacket(frame)
         }
     }
@@ -130,11 +198,13 @@ class IntercomLink(context: Context) {
 
     private fun publish() {
         val state = synchronized(lock) {
+            val available = route != null || cable != null
+            val who = if (cable != null) cableVoice else voice
             State(
-                available = route != null,
+                available = available,
                 hasHeadset = headset,
                 talking = talking,
-                speaking = if (route != null && voice != "-" && voice.isNotEmpty()) voice else null
+                speaking = if (available && who != "-" && who.isNotEmpty()) who else null
             )
         }
         onState?.invoke(state)
@@ -157,7 +227,9 @@ class IntercomLink(context: Context) {
 
     /** Só com [lock]. */
     private fun sendPacket(frame: ShortArray?) {
-        val udp = socket ?: return
+        val wire = cable
+        val udp = socket
+        if (wire == null && udp == null) return
         val token = route?.token ?: ByteArray(8)
         val packet = ByteArray(HEADER_SIZE + if (frame != null) FRAME_SAMPLES * 2 else 0)
         packet[0] = 'P'.code.toByte()
@@ -177,8 +249,20 @@ class IntercomLink(context: Context) {
                 packet[HEADER_SIZE + i * 2 + 1] = ((v shr 8) and 0xFF).toByte()
             }
         }
+        if (wire != null && frame != null) {
+            // Pelo cabo: tamanho (2 bytes) + pacote. Sem ficha conferida (só o PC do cabo chega).
+            val framed = ByteArray(2 + packet.size)
+            framed[0] = (packet.size and 0xFF).toByte()
+            framed[1] = ((packet.size shr 8) and 0xFF).toByte()
+            System.arraycopy(packet, 0, framed, 2, packet.size)
+            try {
+                wire.getOutputStream().write(framed)
+            } catch (_: Exception) {
+            }
+            return
+        }
         try {
-            udp.send(DatagramPacket(packet, packet.size))
+            udp?.send(DatagramPacket(packet, packet.size))
         } catch (_: Exception) {
         }
     }

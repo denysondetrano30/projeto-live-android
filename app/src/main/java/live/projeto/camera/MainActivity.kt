@@ -36,6 +36,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var camera: CameraController
     private lateinit var encoder: VideoEncoder
     private lateinit var link: PcLink
+    private lateinit var usb: UsbLink
     private lateinit var audio: AudioCapture
     private lateinit var intercom: IntercomLink
 
@@ -59,7 +60,12 @@ class MainActivity : ComponentActivity() {
 
     private var directorNumber: Long? = null
     private var resumed = false
-    private var sendingNow = false
+    private var sendingWifi = false
+    private var sendingUsb = false
+    private var tallyWifi = false
+    private var tallyUsb = false
+    private var directorFromUsb = false
+    private var lastLinkState: PcLink.State = PcLink.State.Starting
     private var zoom = 1f
 
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
@@ -95,26 +101,54 @@ class MainActivity : ComponentActivity() {
         audio = AudioCapture(this)
         intercom = IntercomLink(this)
 
-        encoder.output = { unit, pts, key -> link.sendVideo(unit, pts, key) }
-        audio.onAac = { adts, pts -> link.sendAudio(adts, pts) }
+        usb = UsbLink(link.cameraName, intercom)
+        encoder.output = { unit, pts, key ->
+            link.sendVideo(unit, pts, key)
+            usb.sendVideo(unit, pts, key)
+        }
+        audio.onAac = { adts, pts ->
+            link.sendAudio(adts, pts)
+            usb.sendAudio(adts, pts)
+        }
         audio.onIntercom = { frame -> intercom.captured(frame) }
         link.onNeedKeyFrame = { encoder.requestKeyFrame() }
         link.onState = { state -> runOnUiThread { showLink(state) } }
         link.onSending = { value ->
             runOnUiThread {
-                sendingNow = value
+                sendingWifi = value
                 updateMicrophone()
             }
         }
-        link.control.onTally = { value -> runOnUiThread { showTally(value) } }
+        link.control.onTally = { value ->
+            runOnUiThread {
+                tallyWifi = value
+                showTally()
+            }
+        }
+        usb.onNeedKeyFrame = { encoder.requestKeyFrame() }
+        usb.onSending = { value ->
+            runOnUiThread {
+                sendingUsb = value
+                updateMicrophone()
+                showLink(lastLinkState)
+            }
+        }
+        usb.onTally = { value ->
+            runOnUiThread {
+                tallyUsb = value
+                showTally()
+            }
+        }
+        usb.onCommand = { number, text -> runOnUiThread { showDirector(number, text, fromUsb = true) } }
         link.control.onAudio = { route -> intercom.setWifiRoute(route) }
         link.control.onVoice = { text -> intercom.setVoice(text) }
-        link.control.onCommand = { number, text -> runOnUiThread { showDirector(number, text) } }
+        link.control.onCommand = { number, text -> runOnUiThread { showDirector(number, text, fromUsb = false) } }
         intercom.onState = { state -> runOnUiThread { showIntercom(state) } }
         camera.onStatus = { status -> runOnUiThread { showCamera(status) } }
 
         intercom.start()
         link.start()
+        usb.start()
         showLink(PcLink.State.Starting)
         showIntercom(IntercomLink.State())
 
@@ -160,7 +194,7 @@ class MainActivity : ComponentActivity() {
 
     /** O microfone fica ligado enquanto o OBS recebe a imagem. */
     private fun updateMicrophone() {
-        if (sendingNow && granted(Manifest.permission.RECORD_AUDIO)) audio.start() else audio.stop()
+        if ((sendingWifi || sendingUsb) && granted(Manifest.permission.RECORD_AUDIO)) audio.start() else audio.stop()
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -453,6 +487,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showLink(state: PcLink.State) {
+        lastLinkState = state
+        if (sendingUsb) {
+            statusText.text = "● ${link.cameraName} · Enviando pelo cabo USB"
+            val usbDot = android.text.SpannableString(statusText.text)
+            usbDot.setSpan(android.text.style.ForegroundColorSpan(Color.GREEN), 0, 1, 0)
+            statusText.text = usbDot
+            return
+        }
         val (text, color) = when (state) {
             PcLink.State.Starting -> "Preparando o envio para o PC…" to Color.GRAY
             PcLink.State.NoWifi -> "Sem Wi-Fi: conecte o celular na mesma rede do PC" to Color.RED
@@ -484,7 +526,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun showTally(onAir: Boolean) {
+    private fun showTally() {
+        val onAir = tallyWifi || tallyUsb
         tallyBorder.visibility = if (onAir) View.VISIBLE else View.GONE
         tallyLabel.visibility = if (onAir) View.VISIBLE else View.GONE
     }
@@ -516,7 +559,8 @@ class MainActivity : ComponentActivity() {
         audio.silent = intercom.isTalking
     }
 
-    private fun showDirector(number: Long, text: String) {
+    private fun showDirector(number: Long, text: String, fromUsb: Boolean) {
+        directorFromUsb = fromUsb
         directorNumber = number
         directorText.text = text
         directorBox.visibility = View.VISIBLE
@@ -528,7 +572,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun acknowledgeDirector() {
-        directorNumber?.let { link.control.acknowledge(it) }
+        directorNumber?.let { if (directorFromUsb) usb.acknowledge(it) else link.control.acknowledge(it) }
         directorNumber = null
         directorBox.visibility = View.GONE
     }
