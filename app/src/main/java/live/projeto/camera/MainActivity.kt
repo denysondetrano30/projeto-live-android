@@ -3,7 +3,12 @@ package live.projeto.camera
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.graphics.Color
 import android.graphics.SurfaceTexture
 import android.graphics.Typeface
@@ -61,6 +66,17 @@ class MainActivity : ComponentActivity() {
     private var directorNumber: Long? = null
     private var resumed = false
     private var sendingWifi = false
+    private lateinit var usbGuide: LinearLayout
+    private val usbSteps = mutableListOf<TextView>()
+    private var usbGuideDismissed = false
+    private var usbWasConnected = false
+    private val ticker = Handler(Looper.getMainLooper())
+    private val usbCheck = object : Runnable {
+        override fun run() {
+            refreshUsbGuide()
+            ticker.postDelayed(this, 1000)
+        }
+    }
     private var sendingUsb = false
     private var tallyWifi = false
     private var tallyUsb = false
@@ -162,11 +178,14 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         resumed = true
         openCameraIfReady()
+        ticker.removeCallbacks(usbCheck)
+        ticker.post(usbCheck)
     }
 
     override fun onPause() {
         super.onPause()
         resumed = false
+        ticker.removeCallbacks(usbCheck)
         camera.close()
     }
 
@@ -306,8 +325,15 @@ class MainActivity : ComponentActivity() {
             background = pill()
             setPadding(dp(8f), dp(5f), dp(8f), dp(5f))
         }
+        val cableHelp = label(12f).apply {
+            text = "Cabo USB"
+            background = pill()
+            setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
+            setOnClickListener { showUsbGuide(true) }
+        }
         top.addView(statusText)
         top.addView(version, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6f) })
+        top.addView(cableHelp, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(6f) })
         root.addView(top, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
             setMargins(dp(16f), dp(16f), dp(16f), 0)
         })
@@ -450,7 +476,115 @@ class MainActivity : ComponentActivity() {
             setMargins(dp(40f), dp(40f), dp(40f), dp(40f))
         })
 
+        buildUsbGuide()
         setContentView(root)
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Guia do cabo USB: o cabo precisa da Depuração USB, que só o próprio operador liga no Android
+    // (nenhum app consegue ligar). O guia aparece sozinho quando o cabo está ligado e a depuração não,
+    // e também pelo botão "Cabo USB". Cada passo ganha ✓ quando o app percebe que deu certo.
+
+    private fun buildUsbGuide() {
+        usbGuide = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pill(Color.argb(235, 20, 20, 24), 16f)
+            setPadding(dp(22f), dp(18f), dp(22f), dp(18f))
+            visibility = View.GONE
+            isClickable = true
+        }
+        usbGuide.addView(label(18f).apply { text = "Usar pelo cabo USB" })
+        usbGuide.addView(label(13f, bold = false).apply {
+            text = "Uma vez por celular. Depois é só ligar o cabo."
+            setTextColor(Color.LTGRAY)
+        }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(10f) })
+
+        val steps = listOf(
+            "Ligue o modo desenvolvedor: em Sobre o telefone, toque 7 vezes em \"Número da versão\" (em alguns: Informações do software › Número da versão)." to
+                ("Abrir Sobre o telefone" to Settings.ACTION_DEVICE_INFO_SETTINGS),
+            "Ligue a Depuração USB: Opções do desenvolvedor › Depuração USB." to
+                ("Abrir Opções do desenvolvedor" to Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+            "Ligue o celular no computador com um cabo de dados (cabo só de carregar não serve)." to null,
+            "Toque em \"Permitir\" quando o celular perguntar e, no OBS, escolha Cabo USB na fonte Celular." to null
+        )
+        steps.forEach { (text, action) ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val line = label(14f, bold = false).apply { this.text = text }
+            usbSteps.add(line)
+            row.addView(line, LinearLayout.LayoutParams(0, -2, 1f))
+            if (action != null) {
+                row.addView(label(13f).apply {
+                    this.text = action.first
+                    background = pill(Color.rgb(60, 110, 230), 18f)
+                    setPadding(dp(14f), dp(8f), dp(14f), dp(8f))
+                    setOnClickListener { openSettings(action.second) }
+                }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(12f) })
+            }
+            usbGuide.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10f) })
+        }
+        usbGuide.addView(label(14f).apply {
+            text = "Fechar"
+            gravity = Gravity.CENTER
+            background = pill(Color.argb(90, 255, 255, 255), 20f)
+            setPadding(dp(24f), dp(10f), dp(24f), dp(10f))
+            setOnClickListener {
+                usbGuideDismissed = true
+                usbGuide.visibility = View.GONE
+            }
+        }, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END })
+        root.addView(usbGuide, FrameLayout.LayoutParams(dp(560f), -2, Gravity.CENTER))
+    }
+
+    private fun openSettings(action: String) {
+        try {
+            startActivity(Intent(action))
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
+        }
+    }
+
+    private fun showUsbGuide(manual: Boolean) {
+        if (manual) usbGuideDismissed = false
+        usbGuide.visibility = View.VISIBLE
+        usbGuide.bringToFront()
+        refreshUsbGuide()
+    }
+
+    private fun globalSetting(name: String) = try {
+        Settings.Global.getInt(contentResolver, name, 0) == 1
+    } catch (_: Exception) {
+        false
+    }
+
+    /** O cabo ligado num computador (o aviso "USB_STATE" do sistema, que não pede permissão). */
+    private fun usbConnected(): Boolean {
+        val state = registerReceiver(null, IntentFilter("android.hardware.usb.action.USB_STATE"))
+        return state?.getBooleanExtra("connected", false) == true
+    }
+
+    private fun refreshUsbGuide() {
+        if (!::usbGuide.isInitialized || !::usb.isInitialized) return
+        val developer = globalSetting(Settings.Global.DEVELOPMENT_SETTINGS_ENABLED)
+        val debugging = globalSetting(Settings.Global.ADB_ENABLED)
+        val connected = usbConnected()
+        val done = listOf(developer, developer && debugging, connected, usb.isSending)
+        usbSteps.forEachIndexed { index, line ->
+            val text = line.text.toString().removePrefix("✓ ").removePrefix("• ")
+            line.text = (if (done[index]) "✓ " else "• ") + text
+            line.setTextColor(if (done[index]) Color.rgb(120, 220, 120) else Color.WHITE)
+        }
+        // Cabo ligado agora, sem depuração e sem enviar: o guia aparece sozinho (uma vez por ligação).
+        if (connected && !usbWasConnected) usbGuideDismissed = false
+        usbWasConnected = connected
+        if (connected && !debugging && !usb.isSending && !usbGuideDismissed && usbGuide.visibility != View.VISIBLE) showUsbGuide(false)
+        if (usb.isSending && usbGuide.visibility == View.VISIBLE && !usbGuideDismissed) {
+            // Deu certo: mostra o ✓ final por um instante e fecha.
+            ticker.postDelayed({ usbGuide.visibility = View.GONE }, 2500)
+            usbGuideDismissed = true
+        }
     }
 
     /** A imagem ocupa o maior 16:9 que cabe na tela. */
